@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Тесты и покрытие
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Состояние узлов и результаты экспериментов
+state/
+results/
+*.log
+
+# Секреты и ключи — никогда не коммитить
+*.pem
+*.key
+*.crt
+identity.json
+
+# ОС
+.DS_Store
+Thumbs.db
