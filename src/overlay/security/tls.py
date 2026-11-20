@@ -80,7 +80,9 @@ class TlsSecurity:
             self._config.identity_dir / NODE_KEY_FILE
         )
         bundle = CertificateBundle(Path(cert_path), Path(key_path))
-        if bundle.exists() and certificate_matches_identity(bundle.cert_path, self._identity):
+        if bundle.exists() and certificate_matches_identity(
+            bundle.cert_path, self._identity, self._ca_path
+        ):
             return bundle
         ca_key = _resolve_path(self._config.ca_key)
         if ca_key is None or not ca_key.exists():

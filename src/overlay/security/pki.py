@@ -173,8 +173,15 @@ def issue_node_certificate(
     return CertificateBundle(cert_path, key_path)
 
 
-def certificate_matches_identity(cert_path: Path, identity: Identity) -> bool:
-    """Проверить, что сертификат выпущен для текущего identity-ключа."""
+def certificate_matches_identity(
+    cert_path: Path, identity: Identity, ca_cert_path: Path | None = None
+) -> bool:
+    """Проверить, что сертификат выпущен для текущего ключа и текущего CA.
+
+    Проверка издателя обязательна: после смены корневого сертификата стенда
+    (новый каталог прогона, удалённый ``pki/``) старый сертификат узла ещё
+    соответствует ключу, но уже не принимается собеседниками.
+    """
     try:
         cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
     except Exception:
@@ -185,7 +192,20 @@ def certificate_matches_identity(cert_path: Path, identity: Identity) -> bool:
     if spki != identity.public_key_der:
         return False
     now = datetime.datetime.now(datetime.UTC)
-    return cert.not_valid_before_utc <= now <= cert.not_valid_after_utc
+    if not cert.not_valid_before_utc <= now <= cert.not_valid_after_utc:
+        return False
+    if ca_cert_path is not None:
+        try:
+            ca_cert = load_ca_certificate(ca_cert_path)
+        except Exception:
+            return False
+        if cert.issuer != ca_cert.subject:
+            return False
+        try:
+            cert.verify_directly_issued_by(ca_cert)
+        except Exception:
+            return False
+    return True
 
 
 def _load_private_key(path: Path) -> ed25519.Ed25519PrivateKey:

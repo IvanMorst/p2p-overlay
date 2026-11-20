@@ -102,3 +102,14 @@ def test_missing_ca_key_raises(tmp_path: Path) -> None:
             tmp_path / "missing-key.pem",
             tmp_path / "node",
         )
+
+def test_certificate_of_other_ca_is_rejected(tmp_path: Path) -> None:
+    """Сертификат, выпущенный другим CA стенда, не принимается."""
+    ca_first = create_ca(tmp_path / "pki-first")
+    ca_second = create_ca(tmp_path / "pki-second")
+    identity = Identity.generate()
+    bundle = issue_node_certificate(
+        identity, ca_first.cert_path, ca_first.key_path, tmp_path / "node"
+    )
+    assert certificate_matches_identity(bundle.cert_path, identity, ca_first.cert_path)
+    assert not certificate_matches_identity(bundle.cert_path, identity, ca_second.cert_path)

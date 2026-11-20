@@ -22,6 +22,7 @@ import contextlib
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -129,6 +130,33 @@ def write_configs(args: argparse.Namespace, run_dir: Path) -> list[Path]:
     return paths
 
 
+def check_ports_free(data_ports: list[int], control_ports: list[int]) -> None:
+    """Отказаться от запуска, если порты заняты прежним стендом."""
+    busy: list[int] = []
+    for port in [*data_ports, *control_ports]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                busy.append(port)
+    if busy:
+        raise SystemExit(
+            "ports are busy: "
+            + ", ".join(str(port) for port in busy)
+            + "\nstop leftover nodes (or use --base-port/--control-base) and retry"
+        )
+
+
+def ensure_alive(processes: list[subprocess.Popen[bytes]], run_dir: Path) -> None:
+    """Проверить, что ни один узел не завершился при старте."""
+    for index, process in enumerate(processes):
+        code = process.poll()
+        if code is None:
+            continue
+        err = run_dir / "logs" / f"node{index}.err"
+        tail = err.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]
+        raise SystemExit(f"node{index} exited with code {code}: " + " | ".join(tail))
+
+
 def start_nodes(configs: list[Path], run_dir: Path) -> list[subprocess.Popen[bytes]]:
     logs = run_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -220,10 +248,16 @@ async def main_async(args: argparse.Namespace, run_dir: Path) -> int:
     print(f"stand directory: {run_dir}")
     print(f"configs: {len(configs)}, scheme: {args.scheme}, k={args.k}, relays={args.relays}")
 
+    data_ports = [args.base_port + i for i in range(args.nodes)]
+    control_ports = [args.control_base + i for i in range(args.nodes)]
+    check_ports_free(data_ports, control_ports)
     processes = start_nodes(configs, run_dir)
-    ports = [args.control_base + i for i in range(args.nodes)]
+    ports = control_ports
     try:
+        await asyncio.sleep(0.5)
+        ensure_alive(processes, run_dir)
         states = await wait_ready(ports, timeout=args.ready_timeout)
+        ensure_alive(processes, run_dir)
         print(f"nodes ready: {len(states)}")
         conv = await convergence(ports, timeout=args.converge_timeout)
         print(f"contacts per node: {conv['contacts']}")
@@ -275,8 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nodes", type=int, default=13)
     parser.add_argument("--scheme", default="star", choices=["star", "ring", "tree", "multi-seed"])
     parser.add_argument("--dir", type=Path, default=None, help="каталог прогона")
-    parser.add_argument("--base-port", type=int, default=7000)
-    parser.add_argument("--control-base", type=int, default=9000)
+    # 7000/9000 заняты демонстрационными конфигурациями из configs/demo.
+    parser.add_argument("--base-port", type=int, default=7100)
+    parser.add_argument("--control-base", type=int, default=9100)
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--alpha", type=int, default=3)
     parser.add_argument("--relays", type=int, default=2)
