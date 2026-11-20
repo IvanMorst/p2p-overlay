@@ -206,6 +206,9 @@ class Connection:
         finally:
             self._closed.set()
             self._fail_pending(ConnectionError("connection closed"))
+            # Пишущий поток закрывается при любом завершении задачи чтения:
+            # EOF, ошибка кадра, ошибка TLS, отмена задачи или разрыв.
+            self.writer.close()
 
     def _fail_pending(self, exc: BaseException) -> None:
         for pending in self._pending.values():
@@ -220,6 +223,12 @@ class Connection:
                 return
             if frame.is_error:
                 pending.future.set_exception(_remote_error(frame))
+                return
+            if not frame.is_response:
+                # Ответ коррелирован по request_id, но флаг ответа не выставлен.
+                pending.future.set_exception(
+                    ProtocolError("response flag is not set on the correlated reply")
+                )
                 return
             if pending.expected_type is not None and frame.type != pending.expected_type:
                 pending.future.set_exception(
