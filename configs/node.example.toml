@@ -1,19 +1,81 @@
+# Пример конфигурации узла оверлейной сети.
+#
+# Все параметры, перечисленные в разделе 14 ТЗ, задаются здесь и не требуют
+# правки исходного кода. Скопируйте файл и измените значения для конкретного
+# узла стенда.
+
 [node]
-node_id_bits = 160
-state_dir = "./state"
+# Разрядность NodeID: 256 — полная формула SHA-256 из раздела 9 ТЗ.
+# Меньшие значения (кратные 8) допустимы для исследования заполнения k-bucket
+# на малом числе узлов.
+node_id_bits = 256
+# Индивидуальный каталог состояния: идентичность, закрытый ключ, локальное
+# хранилище DHT. Относительный путь разрешается от каталога этого файла.
+state_dir = "state/node"
+# 0 — недетерминированный выбор целей refresh (обычный запуск).
+random_seed = 0
 
 [network]
 listen_host = "0.0.0.0"
 listen_port = 7000
+# Адрес, который узел объявляет другим. Пусто — взять listen_host, а для
+# 0.0.0.0 подставить 127.0.0.1.
+advertise_host = ""
 connect_timeout_seconds = 5.0
 request_timeout_seconds = 5.0
+handshake_timeout_seconds = 10.0
 max_frame_payload = 65536
+# Bootstrap-контакты: начальные адреса, известные узлу при присоединении.
 bootstrap_peers = []
 
 [dht]
 k_bucket_size = 3
 alpha = 3
 replication_factor = 3
+# Запись считается сохранённой после подтверждения не менее чем от 2 из 3.
+store_success_acks = 2
 record_ttl_seconds = 180
 refresh_interval_seconds = 60
+# Интервал переопубликования = record_ttl_seconds * republish_fraction.
 republish_fraction = 0.5
+max_record_bytes = 4096
+max_addresses = 4
+lookup_max_iterations = 32
+bucket_refresh_interval_seconds = 600.0
+
+[security]
+# tls13 — TLS 1.3 с взаимной аутентификацией (приёмочный режим).
+# plain — только для изолированных тестов транспорта и DHT.
+mode = "tls13"
+tls_min_version = "TLSv1.3"
+verify_peer_identity = true
+# Разрешить доверительный контакт с bootstrap-узлом, чей NodeID ещё неизвестен.
+allow_bootstrap_trust = true
+certificate_lifetime_days = 365
+replay_cache_size = 4096
+
+[tunnel]
+min_relays = 2
+max_relays = 3
+max_hops = 5
+pool_size = 1
+build_timeout_seconds = 10.0
+data_timeout_seconds = 5.0
+health_interval_seconds = 2.0
+max_retries = 3
+# Прямая доставка как аварийный режим: не засчитывается как туннельная.
+allow_direct_fallback = false
+
+[app]
+max_message_bytes = 8192
+history_size = 200
+
+[metrics]
+enabled = true
+dir = "results"
+run_id = "default"
+
+[control]
+# Локальный интерфейс управления (только петлевой адрес). 0 — выключен.
+host = "127.0.0.1"
+port = 0

@@ -1,0 +1,9 @@
+# Нормализация переводов строк: в репозитории всегда LF.
+* text=auto eol=lf
+
+# Бинарные и криптографические артефакты не трогать.
+*.pem binary
+*.key binary
+*.crt binary
+*.png binary
+*.pcap binary

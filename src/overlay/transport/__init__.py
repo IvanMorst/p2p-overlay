@@ -1,3 +1,7 @@
+"""Транспортный слой: кадрирование, сериализация payload, TCP-соединения."""
+
+from __future__ import annotations
+
 from .frame import (
     FLAG_ERROR,
     FLAG_FRAGMENT,
@@ -14,8 +18,9 @@ from .frame import (
     MsgType,
     PayloadTooLarge,
     ShortHeader,
+    short_node_id,
 )
-from .tcp import Connection, StreamDecoder, connect, serve
+from .tcp import Connection, ConnectionHandler, StreamDecoder, connect, serve
 
 __all__ = [
     "FLAG_ERROR",
@@ -26,6 +31,8 @@ __all__ = [
     "PROTOCOL_VERSION",
     "BadType",
     "BadVersion",
+    "Connection",
+    "ConnectionHandler",
     "ErrorCode",
     "Frame",
     "FrameError",
@@ -33,8 +40,8 @@ __all__ = [
     "MsgType",
     "PayloadTooLarge",
     "ShortHeader",
-    "Connection",
     "StreamDecoder",
     "connect",
     "serve",
+    "short_node_id",
 ]

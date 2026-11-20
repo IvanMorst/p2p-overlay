@@ -1,0 +1,40 @@
+# Демонстрационный узел B: присоединяется к узлу A по bootstrap-адресу.
+[node]
+node_id_bits = 256
+state_dir = "state/node-b"
+random_seed = 2
+
+[network]
+listen_host = "127.0.0.1"
+listen_port = 7001
+connect_timeout_seconds = 3.0
+request_timeout_seconds = 3.0
+handshake_timeout_seconds = 5.0
+max_frame_payload = 65536
+bootstrap_peers = ["127.0.0.1:7000"]
+
+[dht]
+k_bucket_size = 3
+alpha = 3
+replication_factor = 3
+store_success_acks = 2
+record_ttl_seconds = 180
+refresh_interval_seconds = 30
+republish_fraction = 0.5
+
+[security]
+mode = "plain"
+
+[tunnel]
+min_relays = 2
+max_relays = 3
+
+[metrics]
+enabled = true
+dir = "results"
+run_id = "demo-two-nodes"
+
+[control]
+host = "127.0.0.1"
+port = 9001
+

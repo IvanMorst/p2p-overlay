@@ -3,6 +3,8 @@ import struct
 import pytest
 
 from overlay.transport.frame import (
+    FLAG_ERROR,
+    FLAG_RESPONSE,
     HEADER_SIZE,
     MAX_FRAME_PAYLOAD,
     PROTOCOL_VERSION,
@@ -66,12 +68,12 @@ def test_payload_length_is_big_endian_uint32() -> None:
         type=int(MsgType.PING),
         flags=0,
         request_id=request_id,
-        payload_length=0x01020304,
+        payload_length=0x0000ABCD,
     )
     raw = header.pack()
     length_bytes = raw[20:24]
-    assert length_bytes == b"\x01\x02\x03\x04"
-    assert struct.unpack(">I", length_bytes)[0] == 0x01020304
+    assert length_bytes == b"\x00\x00\xab\xcd"
+    assert struct.unpack(">I", length_bytes)[0] == 0x0000ABCD
 
 
 def test_frame_encode_concatenates_header_and_payload() -> None:
@@ -92,3 +94,49 @@ def test_frame_new_request_id_is_unique_and_16_bytes() -> None:
     assert len(a) == 16
     assert len(b) == 16
     assert a != b
+
+
+def test_frame_rejects_oversized_payload_on_construction() -> None:
+    with pytest.raises(PayloadTooLarge):
+        Frame(type=MsgType.PING, request_id=b"\x00" * 16, payload=b"x" * (MAX_FRAME_PAYLOAD + 1))
+
+
+def test_frame_rejects_wrong_request_id() -> None:
+    with pytest.raises(ValueError):
+        Frame(type=MsgType.PING, request_id=b"\x00" * 8)
+
+
+def test_frame_flags_helpers() -> None:
+    response = Frame(type=MsgType.PONG, request_id=b"\x00" * 16, flags=FLAG_RESPONSE)
+    assert response.is_response is True
+    assert response.is_error is False
+    error = Frame(type=MsgType.PONG, request_id=b"\x00" * 16, flags=FLAG_ERROR)
+    assert error.is_error is True
+    explicit = Frame(type=MsgType.ERROR, request_id=b"\x00" * 16)
+    assert explicit.is_error is True
+
+
+def test_message_type_table_covers_required_messages() -> None:
+    required = {
+        "HELLO",
+        "HELLO_OK",
+        "PING",
+        "PONG",
+        "FIND_NODE_REQUEST",
+        "FIND_NODE_RESPONSE",
+        "STORE_REQUEST",
+        "STORE_RESPONSE",
+        "FIND_VALUE_REQUEST",
+        "FIND_VALUE_RESPONSE",
+        "TUNNEL_BUILD",
+        "TUNNEL_BUILD_OK",
+        "TUNNEL_BUILD_FAIL",
+        "TUNNEL_DATA",
+        "TUNNEL_ACK",
+        "TUNNEL_CLOSE",
+        "APP_MESSAGE",
+        "APP_ACK",
+        "ERROR",
+    }
+    assert required <= {member.name for member in MsgType}
+    assert len({int(member) for member in MsgType}) == len(MsgType)
