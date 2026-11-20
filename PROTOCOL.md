@@ -223,6 +223,102 @@ Contact {
 адреса. Некорректный контакт отбрасывается, остальные контакты ответа
 обрабатываются.
 
+### STORE
+
+```text
+STORE_REQUEST  {"key": bytes(32), "record": NodeRecord}
+STORE_RESPONSE {"stored": bool, "reason": str, "sequence_number": uint}
+```
+
+Хранитель проверяет запись целиком и отвечает причиной отказа, а не кадром
+ошибки: отказ по TTL, подписи или версии — штатный результат операции, а не
+нарушение протокола. Хранитель обязан убедиться, что `key` совпадает с
+`record.record_key`; запись под чужим ключом отклоняется.
+
+### FIND_VALUE
+
+```text
+FIND_VALUE_REQUEST  {"key": bytes(32)}
+FIND_VALUE_RESPONSE {"found": true,  "value": NodeRecord}
+FIND_VALUE_RESPONSE {"found": false, "contacts": [Contact, ...], "node_id": bytes(32)}
+```
+
+Если значения нет, возвращаются ближайшие к ключу контакты, и инициатор
+продолжает итеративный поиск. Найденное значение проверяется инициатором
+независимо от хранителя: подпись, `NodeID`, TTL, соответствие ключу. Запись,
+не прошедшая проверку, отбрасывается, поиск продолжается без этого узла.
+
+### NodeRecord
+
+```text
+NodeRecord {
+    "node_id":              bytes(32),
+    "identity_public_key":  bytes(44),
+    "addresses":            [{"host": str, "port": uint16}, ...],
+    "sequence_number":      uint,
+    "issued_at":            uint,   # unix time, секунды
+    "expires_at":           uint,   # unix time, секунды
+    "signature":            bytes(64)
+}
+```
+
+Каноническое представление — канонический CBOR **без** поля `signature`.
+Подпись Ed25519 вычисляется ровно по этим байтам и покрывает все остальные
+поля, включая список адресов и оба времени.
+
+Ключ хранения и поиска записи:
+
+```text
+record_key = SHA-256("node:" || NodeID)
+```
+
+Обязательные проверки записи (выполняются и хранителем, и инициатором):
+
+| Проверка | Отказ |
+|---|---|
+| длина `node_id` равна разрядности сети | `MalformedRecord` |
+| `NodeID = SHA-256(identity_public_key)` | `RecordIdentityMismatch` |
+| подпись по каноническим байтам | `BadRecordSignature` |
+| размер закодированной записи ≤ `max_record_bytes` | `RecordTooLarge` |
+| число адресов 1..`max_addresses`, формат host/port | `BadAddress` |
+| `issued_at ≤ now + 60`, `expires_at > now` | `NotYetValidRecord`, `ExpiredRecord` |
+| `expires_at > issued_at`, TTL ≤ 4 × `record_ttl_seconds` | `NotYetValidRecord` |
+| `key = record_key` | `RecordError` |
+| `sequence_number` не меньше сохранённого | `StaleRecord` |
+
+Из нескольких валидных записей владельца используется запись с наибольшим
+`sequence_number`; запись с меньшим номером считается попыткой отката.
+Запись с тем же номером и другим содержимым также отклоняется.
+
+Пример (тест-вектор: закрытый ключ `00 01 .. 1f`, `issued_at = 1700000000`):
+
+```text
+node_id              a050837d85070582ccf7394b0988847cc312cb88259b894899f6f239cf1791a5
+identity_public_key  302a300506032b657003210003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8
+addresses            [{"host": "192.168.10.24", "port": 7000}]
+sequence_number      3
+issued_at            1700000000
+expires_at           1700000180
+signature            43101815896008b0f42a6efd7a48bfb9deb3548e272f05375440333673e91828
+                     317c1a843a9a6b1c12c79dd8e6880053de16ad24e5615d81ac56817175f60409
+record_key           7bf392b33124eb668fcd4927a436c87c6e54c25ec33ec906a3bc9470fb571b24
+```
+
+Размер канонических подписываемых байтов — 196, всей записи с подписью — 272.
+
+### Репликация и жизненный цикл записи
+
+* владелец публикует запись на `R = 3` ближайших к `record_key` доступных
+  узлах, всегда сохраняя копию локально;
+* операция успешна при не менее чем `store_success_acks = 2` подтверждениях;
+* `TTL` выбирается в диапазоне 120–300 секунд (`record_ttl_seconds`);
+* интервал переопубликования равен `record_ttl_seconds × republish_fraction`
+  и не превышает половины TTL; каждое переопубликование увеличивает
+  `sequence_number`;
+* истёкшие записи удаляются из хранилища и не выдаются по `FIND_VALUE`;
+* при поиске найденная валидная запись сохраняется и инициатором, что
+  увеличивает число хранителей без ручного вмешательства.
+
 ## Защита канала
 
 Межузловые TCP-соединения защищаются TLS 1.3 с взаимной аутентификацией

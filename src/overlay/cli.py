@@ -187,6 +187,46 @@ async def _cmd_ping(args: argparse.Namespace) -> int:
     return 0 if response["alive"] else 1
 
 
+async def _cmd_put(args: argparse.Namespace) -> int:
+    response = await _call(args, "put")
+    publish = response["publish"]
+    _write_json(args.json, response)
+    print(
+        f"published key={publish['record_key'][:12]} sequence={publish['sequence_number']} "
+        f"acks={publish['acks']} success={publish['success']} "
+        f"duration={publish['duration_s']:.4f}s"
+    )
+    return 0 if publish["success"] else 1
+
+
+async def _cmd_get(args: argparse.Namespace) -> int:
+    response = await _call(args, "get", node_id=args.node)
+    record = response["record"]
+    _write_json(args.json, response)
+    print(
+        f"node {record['node_id'][:12]} addresses={','.join(record['addresses'])} "
+        f"sequence={record['sequence_number']} ttl_left={record['ttl_left_s']}s"
+    )
+    return 0
+
+
+async def _cmd_records(args: argparse.Namespace) -> int:
+    response = await _call(args, "records")
+    _write_json(args.json, response)
+    stats = response["stats"]
+    print(
+        f"records={stats['records']} accepted={stats['accepted']} "
+        f"rejected={stats['rejected']} expired={stats['expired']}"
+    )
+    for record in response["records"]:
+        addresses = ",".join(record["addresses"])
+        print(
+            f"  {record['node_id'][:12]} seq={record['sequence_number']:<4} "
+            f"ttl_left={record['ttl_left_s']:>7}s {addresses}"
+        )
+    return 0
+
+
 # ------------------------------------------------------------------ entrypoint
 
 
@@ -242,6 +282,22 @@ def build_parser() -> argparse.ArgumentParser:
     common(p_ping)
     p_ping.add_argument("--node", required=True, help="NodeID в hex")
     p_ping.set_defaults(func=_cmd_ping)
+
+    p_put = sub.add_parser("put", help="опубликовать собственную адресную запись")
+    common(p_put)
+    p_put.add_argument("--json", default=None)
+    p_put.set_defaults(func=_cmd_put)
+
+    p_get = sub.add_parser("get", help="найти адресную запись по NodeID")
+    common(p_get)
+    p_get.add_argument("--node", required=True, help="NodeID в hex")
+    p_get.add_argument("--json", default=None)
+    p_get.set_defaults(func=_cmd_get)
+
+    p_records = sub.add_parser("records", help="локальное хранилище записей DHT")
+    common(p_records)
+    p_records.add_argument("--json", default=None)
+    p_records.set_defaults(func=_cmd_records)
 
     return parser
 

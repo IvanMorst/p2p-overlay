@@ -30,10 +30,18 @@ from .config import NodeConfig, PeerAddress
 from .control import ControlServer
 from .dht.contact import Contact
 from .dht.lookup import IterativeLookup, LookupResult
+from .dht.record import (
+    Address,
+    NodeRecord,
+    parse_record,
+    record_key_for_node,
+    validate_record,
+)
 from .dht.routing import AddResult, KBucket, RoutingTable
 from .dht.rpc import DhtRpc
 from .dht.service import DhtService
-from .errors import HandshakeError
+from .dht.storage import RecordStore, load_store
+from .errors import HandshakeError, RecordError
 from .identity import Identity
 from .metrics import EventRecorder
 from .peers import PeerManager
@@ -64,9 +72,32 @@ class JoinReport:
         }
 
 
+@dataclass(slots=True)
+class PublishResult:
+    """Результат публикации записи DHT."""
+
+    record_key: bytes
+    sequence_number: int
+    local: bool
+    acks: int
+    holders: list[str]
+    success: bool
+    duration_s: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "record_key": self.record_key.hex(),
+            "sequence_number": self.sequence_number,
+            "local_stored": self.local,
+            "acks": self.acks,
+            "holders": list(self.holders),
+            "success": self.success,
+            "duration_s": round(self.duration_s, 6),
+        }
+
+
 class Node:
     """Узел оверлейной сети с DHT и (по мере готовности) туннелями."""
-
     def __init__(
         self,
         config: NodeConfig,
@@ -89,8 +120,12 @@ class Node:
         self.peers = PeerManager(self.identity, config, self.security, metrics=self.metrics)
         self.rpc = DhtRpc(self.peers, config, metrics=self.metrics)
         self.lookup = IterativeLookup(self.table, self.rpc, config, metrics=self.metrics)
-        self.service = DhtService(self.identity, self.table, config, metrics=self.metrics)
+        self.storage: RecordStore = load_store(config)
+        self.service = DhtService(
+            self.identity, self.table, config, storage=self.storage, metrics=self.metrics
+        )
         self._rng = random.Random(config.random_seed or None)
+        self._published_once = False
         self._server: asyncio.Server | None = None
         self.control: ControlServer | None = None
         self._inbound: set[Connection] = set()
@@ -158,6 +193,9 @@ class Node:
         if self._background:
             return
         self._background.append(asyncio.create_task(self._refresh_loop(), name="dht-refresh"))
+        self._background.append(
+            asyncio.create_task(self._maintenance_loop(), name="dht-maintenance")
+        )
 
     async def stop(self) -> None:
         """Остановить узел: фоновые задачи, соединения, сервер."""
@@ -172,6 +210,8 @@ class Node:
             await self.control.stop()
             self.control = None
         await self.peers.close_all()
+        with contextlib.suppress(Exception):
+            self.storage.save()
         inbound = list(self._inbound)
         self._inbound.clear()
         await asyncio.gather(*(c.close() for c in inbound), return_exceptions=True)
@@ -259,6 +299,9 @@ class Node:
                 log.warning("bootstrap %s failed: %s", address, e)
         if bootstrapped:
             await self.lookup.run(self.identity.node_id)
+        # Запись публикуется всегда: даже узел без bootstrap-контактов хранит
+        # свою запись локально и разошлёт её при появлении соседей.
+        await self.publish_self()
         report = JoinReport(
             bootstrapped=bootstrapped,
             failed=failed,
@@ -272,7 +315,207 @@ class Node:
         """Найти узел по ``NodeID`` итеративным поиском DHT."""
         return await self.lookup.run(target)
 
+    # ------------------------------------------------------- записи DHT
+
+    def local_addresses(self) -> list[Address]:
+        """Адреса, которые узел публикует в своей записи."""
+        contact = self.peers.local_contact
+        return [Address(host=contact.host, port=contact.port)]
+
+    def build_self_record(self, *, sequence_number: int | None = None) -> NodeRecord:
+        """Собрать и подписать актуальную запись о себе."""
+        sequence = (
+            sequence_number
+            if sequence_number is not None
+            else self.storage.sequence_for(self.node_id) + 1
+        )
+        return NodeRecord.create(
+            self.identity,
+            self.local_addresses(),
+            sequence_number=sequence,
+            ttl_seconds=self.config.record_ttl_seconds,
+        )
+
+    async def publish_self(self) -> PublishResult:
+        """Опубликовать собственную адресную запись на R ближайших узлах."""
+        record = self.build_self_record()
+        return await self.put_record(record)
+
+    async def put_record(self, record: NodeRecord) -> PublishResult:
+        """Сохранить запись локально и разослать её R ближайшим к ключу узлам.
+
+        Операция успешна, если подтверждений не меньше ``store_success_acks``
+        (по умолчанию 2 из 3).
+        """
+        started = time.perf_counter()
+        validate_record(record, self.config)
+        key = record.record_key
+        local = self.storage.put(record)
+        if local.accepted:
+            self.storage.save()
+
+        found = await self.lookup.run(key)
+        holders: list[str] = []
+        acked = 1 if local.accepted else 0
+        candidates = self._replication_candidates(key, found.contacts)
+        results = await asyncio.gather(
+            *(self._store_at(contact, key, record) for contact in candidates),
+            return_exceptions=True,
+        )
+        for contact, result in zip(candidates, results, strict=True):
+            if result is True:
+                acked += 1
+                holders.append(contact.node_id.hex())
+            elif self.metrics is not None:
+                self.metrics.emit(
+                    "dht.store_failed",
+                    peer=contact.short_id,
+                    error=type(result).__name__ if isinstance(result, BaseException) else "refused",
+                )
+
+        success = acked >= self.config.store_success_acks
+        if local.accepted:
+            self._published_once = True
+        report = PublishResult(
+            record_key=key,
+            sequence_number=record.sequence_number,
+            local=local.accepted,
+            acks=acked,
+            holders=holders,
+            success=success,
+            duration_s=time.perf_counter() - started,
+        )
+        self.metrics.emit(
+            "dht.publish",
+            key=key.hex()[:12],
+            node=self.node_id.hex()[:12],
+            sequence_number=record.sequence_number,
+            acks=acked,
+            holders=len(holders),
+            success=success,
+            duration_s=round(report.duration_s, 6),
+        )
+        return report
+
+    async def _store_at(self, contact: Contact, key: bytes, record: NodeRecord) -> bool:
+        try:
+            return await self.rpc.store(contact, key, record.to_cbor())
+        except Exception:
+            return False
+
+    def _replication_candidates(self, key: bytes, found: list[Contact]) -> list[Contact]:
+        """Выбрать до R ближайших к ключу узлов среди найденных и известных.
+
+        Если поиск вернул меньше кандидатов, чем требуется для репликации
+        (малая сеть или только что присоединившийся узел), набор дополняется
+        ближайшими контактами таблицы маршрутизации.
+        """
+        limit = self.config.replication_factor
+        chosen: list[Contact] = []
+        seen: set[bytes] = {self.node_id}
+        for contact in found:
+            if contact.node_id in seen:
+                continue
+            chosen.append(contact)
+            seen.add(contact.node_id)
+            if len(chosen) >= limit:
+                return chosen
+        for contact in self.table.closest(key):
+            if contact.node_id in seen:
+                continue
+            chosen.append(contact)
+            seen.add(contact.node_id)
+            if len(chosen) >= limit:
+                break
+        return chosen
+
+    async def get_record(self, key: bytes) -> NodeRecord | None:
+        """Найти запись по ключу: локально либо итеративным ``FIND_VALUE``."""
+        local = self.storage.get(key)
+        if local is not None:
+            return local
+
+        def _validate(payload: dict[str, Any]) -> None:
+            candidate = parse_record(payload)
+            validate_record(candidate, self.config)
+            if candidate.record_key != key:
+                raise RecordError("key does not match the record NodeID")
+
+        result = await self.lookup.run(key, want_value=True, validator=_validate)
+        if result.value is None:
+            if self.metrics is not None:
+                self.metrics.emit(
+                    "dht.get_miss",
+                    key=key.hex()[:12],
+                    rpc=result.rpc_count,
+                    rejected=result.rejected_values,
+                )
+            return None
+        record = parse_record(result.value)
+        # Найденную запись сохраняем: узел становится дополнительным хранителем.
+        self.storage.put(record)
+        if self.metrics is not None:
+            self.metrics.emit(
+                "dht.get_hit",
+                key=key.hex()[:12],
+                source=result.value_node.hex()[:12] if result.value_node else None,
+                sequence_number=record.sequence_number,
+            )
+        return record
+
+    async def resolve_contact(self, node_id: bytes) -> Contact:
+        """Найти контакт узла по ``NodeID`` через подписанную запись DHT."""
+        if node_id == self.node_id:
+            return self.peers.local_contact
+        known = self.table.get(node_id)
+        record = await self.get_record(record_key_for_node(node_id))
+        if record is None:
+            if known is not None:
+                return known
+            raise RecordError(f"no address record for {node_id.hex()[:12]}")
+        address = record.addresses[0]
+        return Contact(
+            node_id=record.node_id,
+            public_key_der=record.identity_public_key,
+            host=address.host,
+            port=address.port,
+        )
+
     # ------------------------------------------------------------ background
+
+    async def _maintenance_loop(self) -> None:
+        """Удаление записей по TTL и переопубликование собственной записи.
+
+        Интервал переопубликования не превышает половины TTL
+        (``republish_fraction <= 0.5``), поэтому запись не успевает истечь у
+        хранителей между обновлениями.
+        """
+        interval = float(self.config.republish_interval_seconds)
+        tick = max(0.2, min(interval / 2.0, 5.0))
+        last = time.monotonic()
+        self._published_once = False
+        while not self._stopping:
+            await asyncio.sleep(tick)
+            if time.monotonic() - last < interval:
+                continue
+            last = time.monotonic()
+            try:
+                purged = self.storage.purge_expired()
+                if purged:
+                    self.metrics.emit("dht.records_expired", count=purged)
+                if self._published_once and len(self.table) > 0:
+                    report = await self.publish_self()
+                    self.metrics.emit(
+                        "dht.republish",
+                        sequence_number=report.sequence_number,
+                        acks=report.acks,
+                        success=report.success,
+                    )
+                self.storage.save()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("record maintenance failed")
 
     async def _refresh_loop(self) -> None:
         """Периодическое обновление bucket: поиск случайной цели в их зоне."""
@@ -340,6 +583,8 @@ class Node:
             "contacts": [c.to_public_dict() for c in self.table.all_contacts()],
             "peers": self.peers.snapshot(),
             "rpc": self.rpc.stats(),
+            "storage": self.storage.stats(),
+            "records": self.storage.snapshot(),
             "dht_service": {
                 "requests_in": self.service.requests_in,
                 "requests_out": self.service.requests_out,

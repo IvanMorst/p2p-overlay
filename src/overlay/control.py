@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
+from .dht.record import record_key_for_node
 from .transport import codec
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотаций
@@ -123,6 +125,36 @@ class ControlServer:
             raise ControlError("node is not in the routing table; run lookup first")
         alive = await self._node.rpc.ping(contact)
         return {"alive": alive, "node_id": target.hex()}
+
+    # ------------------------------------------------------- записи DHT
+
+    async def _cmd_put(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Опубликовать собственную адресную запись."""
+        report = await self._node.publish_self()
+        return {"publish": report.to_dict()}
+
+    async def _cmd_get(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Найти адресную запись узла по его NodeID."""
+        target = _require_node_id(request, "node_id")
+        record = await self._node.get_record(record_key_for_node(target))
+        if record is None:
+            raise ControlError("address record not found")
+        return {
+            "record": {
+                "node_id": record.node_id.hex(),
+                "addresses": [str(a) for a in record.addresses],
+                "sequence_number": record.sequence_number,
+                "issued_at": record.issued_at,
+                "expires_at": record.expires_at,
+                "ttl_left_s": round(record.expires_at - time.time(), 3),
+            }
+        }
+
+    async def _cmd_records(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "stats": self._node.storage.stats(),
+            "records": self._node.storage.snapshot(),
+        }
 
 
 async def _read_message(reader: asyncio.StreamReader) -> dict[str, Any]:

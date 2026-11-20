@@ -22,6 +22,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +74,7 @@ class LookupResult:
     duration_s: float
     steps: list[LookupStep] = field(default_factory=list)
     converged: bool = True
+    rejected_values: int = 0
 
     @property
     def found(self) -> bool:
@@ -97,6 +99,7 @@ class LookupResult:
             "steps": [s.to_dict() for s in self.steps],
             "result_contacts": [c.node_id.hex() for c in self.contacts],
             "converged": self.converged,
+            "rejected_values": self.rejected_values,
         }
 
 
@@ -125,20 +128,33 @@ class IterativeLookup:
         *,
         want_value: bool = False,
         initial: list[Contact] | None = None,
+        validator: Callable[[dict[str, Any]], Any] | None = None,
+        exclude: set[bytes] | None = None,
     ) -> LookupResult:
+        """Выполнить поиск узла или значения.
+
+        ``validator`` вызывается для найденного значения; исключение означает,
+        что узел вернул недействительные данные, и поиск продолжается без него.
+        ``exclude`` исключает узлы из рассмотрения (например, уже отдавшие
+        недействительную запись).
+        """
         started = time.perf_counter()
         lookup_id = uuid.uuid4().hex
         if len(target) != len(self._table.local_id):
             raise RoutingError("target length does not match the identifier length")
 
+        skipped = exclude or set()
         shortlist: dict[bytes, Contact] = {}
         for contact in initial if initial is not None else self._table.closest(target):
+            if contact.node_id in skipped:
+                continue
             shortlist.setdefault(contact.node_id, contact)
         queried: set[bytes] = set()
         steps: list[LookupStep] = []
         rpc_count = 0
         timeouts = 0
         errors = 0
+        rejected_values = 0
         value: dict[str, Any] | None = None
         value_node: bytes | None = None
         converged = False
@@ -183,12 +199,26 @@ class IterativeLookup:
                 for candidate in contacts:
                     if candidate.node_id == self._table.local_id:
                         continue
-                    if candidate.node_id in shortlist:
+                    if candidate.node_id in shortlist or candidate.node_id in skipped:
                         continue
                     shortlist[candidate.node_id] = candidate
                     new_contacts += 1
                 self._remember(contact)
                 if found is not None and value is None:
+                    if validator is not None:
+                        try:
+                            validator(found)
+                        except Exception as e:
+                            rejected_values += 1
+                            skipped.add(contact.node_id)
+                            shortlist.pop(contact.node_id, None)
+                            log.warning(
+                                "lookup %s: invalid value from %s rejected: %s",
+                                lookup_id,
+                                contact.short_id,
+                                e,
+                            )
+                            continue
                     value = found
                     value_node = contact.node_id
 
@@ -226,6 +256,7 @@ class IterativeLookup:
             duration_s=duration,
             steps=steps,
             converged=converged,
+            rejected_values=rejected_values,
         )
         if self._metrics is not None:
             self._metrics.emit(
@@ -237,6 +268,7 @@ class IterativeLookup:
                 rpc=result_obj.rpc_count,
                 timeouts=result_obj.timeouts,
                 errors=result_obj.errors,
+                rejected_values=rejected_values,
                 found=result_obj.found,
                 duration_s=round(duration, 6),
             )

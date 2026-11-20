@@ -80,7 +80,7 @@ k-bucket и локальному хранилищу DHT.
 |---|---|---|---|
 | Transport | TCP, кадрирование, тайм-ауты, сериализация, корреляция RPC | `transport/frame.py`, `transport/tcp.py`, `transport/codec.py` | реализовано |
 | Identity and Security | долговременная идентичность, `NodeID`, `HELLO`, TLS 1.3, проверка ключа, replay-защита | `identity.py`, `peers.py`, `security/` | этап 4 |
-| DHT and Discovery | XOR-метрика, k-bucket с LRU, bootstrap, RPC, итеративный lookup, записи, TTL, репликация | `dht/` | этап 2 (поиск), этап 3 (записи) |
+| DHT and Discovery | XOR-метрика, k-bucket с LRU, bootstrap, RPC, итеративный lookup, записи, TTL, репликация | `dht/` | реализовано (этапы 2–3) |
 | Tunnel Management | построение, состояние, передача, контроль, перестроение | `tunnel/` | этап 5 |
 | Application Services | текстовые сообщения, подтверждения, история | `app/` | этап 5 |
 | Metrics and Experimentation | события, счётчики, экспорт JSONL/CSV | `metrics/events.py` | реализовано (базово) |
@@ -177,7 +177,8 @@ get_network_state()
 - Этап 1: каркас, транспорт, кадрирование, TCP-сервер и клиент — реализовано.
 - Этап 2: идентичность, `NodeID`, `HELLO`, k-bucket, `PING`/`FIND_NODE`,
   итеративный lookup, bootstrap `star`/`ring`, CLI — реализовано.
-- Этап 3: `STORE`/`FIND_VALUE`, подписи, TTL, репликация — в работе.
+- Этап 3: `STORE`/`FIND_VALUE`, подписанные записи, TTL, репликация,
+  переопубликование — реализовано.
 - Этап 4: защищённая TLS 1.3 сессия, negative-тесты — в работе.
 - Этап 5: туннель и прикладные сообщения — в работе.
 - Этап 6: масштабирование и сценарии отказов — план.
