@@ -86,6 +86,10 @@ class NodeConfig:
     # --- защита канала -----------------------------------------------------
     security_mode: str = "tls13"
     tls_min_version: str = "TLSv1.3"
+    ca_cert: Path | None = None
+    ca_key: Path | None = None
+    cert_file: Path | None = None
+    key_file: Path | None = None
     verify_peer_identity: bool = True
     allow_bootstrap_trust: bool = True
     certificate_lifetime_days: int = 365
@@ -121,7 +125,8 @@ class NodeConfig:
 
     @staticmethod
     def load(path: str | Path) -> NodeConfig:
-        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+        # utf-8-sig: редакторы Windows могут сохранять файл с BOM.
+        raw = tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))
         return NodeConfig.from_dict(raw, base_dir=Path(path).parent)
 
     @staticmethod
@@ -173,6 +178,10 @@ class NodeConfig:
             ),
             security_mode=str(sec.get("mode", "tls13")),
             tls_min_version=str(sec.get("tls_min_version", "TLSv1.3")),
+            ca_cert=_optional_path(sec.get("ca_cert"), base_dir),
+            ca_key=_optional_path(sec.get("ca_key"), base_dir),
+            cert_file=_optional_path(sec.get("cert_file"), base_dir),
+            key_file=_optional_path(sec.get("key_file"), base_dir),
             verify_peer_identity=bool(sec.get("verify_peer_identity", True)),
             allow_bootstrap_trust=bool(sec.get("allow_bootstrap_trust", True)),
             certificate_lifetime_days=int(sec.get("certificate_lifetime_days", 365)),
@@ -263,6 +272,10 @@ class NodeConfig:
         data = asdict(self)
         data["state_dir"] = str(self.state_dir)
         data["metrics_dir"] = str(self.metrics_dir)
+        data["ca_cert"] = str(self.ca_cert) if self.ca_cert else None
+        data["ca_key"] = str(self.ca_key) if self.ca_key else None
+        data["cert_file"] = str(self.cert_file) if self.cert_file else None
+        data["key_file"] = str(self.key_file) if self.key_file else None
         data["bootstrap_peers"] = [str(p) for p in self.bootstrap_peers]
         data["republish_interval_seconds"] = self.republish_interval_seconds
         return data
@@ -280,6 +293,15 @@ def _section(data: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _resolve(path: Path, base_dir: Path) -> Path:
     return path if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _optional_path(value: Any, base_dir: Path | None) -> Path | None:
+    if value in (None, ""):
+        return None
+    path = Path(str(value))
+    if base_dir is None:
+        return path
+    return _resolve(path, base_dir)
 
 
 DEFAULT_CONFIG = NodeConfig()

@@ -23,7 +23,9 @@ refresh_interval_seconds = 30
 republish_fraction = 0.5
 
 [security]
-mode = "plain"
+mode = "tls13"
+ca_cert = "pki/ca.pem"
+ca_key = "pki/ca-key.pem"
 
 [tunnel]
 min_relays = 2
@@ -37,4 +39,3 @@ run_id = "demo-two-nodes"
 [control]
 host = "127.0.0.1"
 port = 9001
-

@@ -14,6 +14,7 @@ import contextlib
 import logging
 import secrets
 import ssl
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -21,11 +22,13 @@ from typing import Any
 from ..errors import ProtocolError, RemoteError, TimeoutExpired
 from . import codec
 from .frame import (
+    FLAG_ERROR,
     HEADER_SIZE,
     MAX_FRAME_PAYLOAD,
     PROTOCOL_VERSION,
     BadType,
     BadVersion,
+    ErrorCode,
     Frame,
     FrameError,
     FrameHeader,
@@ -118,6 +121,9 @@ class Connection:
         self._closed = asyncio.Event()
         self._on_frame: Callable[[Frame], Awaitable[None]] | None = None
         self._closing = False
+        self._seen_requests: set[bytes] = set()
+        self._seen_order: deque[bytes] = deque(maxlen=65_536)
+        self.replays_rejected = 0
         self.frames_in = 0
         self.frames_out = 0
 
@@ -229,6 +235,17 @@ class Connection:
             # Ответ без ожидающего запроса: не выполняем прикладных действий.
             log.debug("late response id=%s from %s", frame.request_id.hex(), self.peer_address)
             return
+        if frame.request_id in self._seen_requests:
+            # Повтор кадра в текущей сессии: прикладное действие не выполняется.
+            self.replays_rejected += 1
+            log.warning(
+                "replay detected: request_id=%s from %s",
+                frame.request_id.hex(),
+                self.peer_address,
+            )
+            await self._reject_replay(frame)
+            return
+        self._remember_request(frame.request_id)
         if self._on_frame is None:
             log.debug("unhandled frame type=%s id=%s", frame.type, frame.request_id.hex())
             return
@@ -240,6 +257,26 @@ class Connection:
             log.exception("handler failed for type 0x%02x", frame.type)
 
     # --- отправка ----------------------------------------------------------
+
+    def _remember_request(self, request_id: bytes) -> None:
+        if len(self._seen_order) == self._seen_order.maxlen:
+            oldest = self._seen_order[0]
+            self._seen_requests.discard(oldest)
+        self._seen_order.append(request_id)
+        self._seen_requests.add(request_id)
+
+    async def _reject_replay(self, frame: Frame) -> None:
+        with contextlib.suppress(Exception):
+            await self.send(
+                Frame(
+                    type=MsgType.ERROR,
+                    request_id=frame.request_id,
+                    payload=codec.encode_payload(
+                        {"code": int(ErrorCode.REPLAY_DETECTED), "detail": "duplicate request_id"}
+                    ),
+                    flags=FLAG_ERROR,
+                )
+            )
 
     async def send(self, frame: Frame) -> None:
         if self._closed.is_set():

@@ -26,7 +26,9 @@ from typing import Any
 from .config import NodeConfig, PeerAddress
 from .control import ControlClient, ControlError
 from .errors import OverlayError
+from .identity import Identity
 from .node import Node
+from .security.pki import create_ca, issue_node_certificate
 from .transport.frame import short_node_id
 
 log = logging.getLogger(__name__)
@@ -227,6 +229,41 @@ async def _cmd_records(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_pki_init(args: argparse.Namespace) -> int:
+    bundle = create_ca(args.out)
+    print(f"CA certificate: {bundle.cert_path}")
+    print(f"CA private key: {bundle.key_path}")
+    print(
+        "укажите оба пути в [security] ca_cert / ca_key каждой конфигурации узла",
+        file=sys.stderr,
+    )
+    return 0
+
+
+async def _cmd_pki_issue(args: argparse.Namespace) -> int:
+    config = _load_config(args.config)
+    if config.security_mode != "tls13":
+        print("error: [security] mode is not tls13", file=sys.stderr)
+        return 1
+    ca_cert = Path(args.ca_cert) if args.ca_cert else config.ca_cert
+    ca_key = Path(args.ca_key) if args.ca_key else config.ca_key
+    if ca_cert is None or ca_key is None:
+        print("error: CA certificate and key are required", file=sys.stderr)
+        return 1
+    identity = Identity.load_or_create(config.identity_dir, config.node_id_bits)
+    bundle = issue_node_certificate(
+        identity,
+        ca_cert,
+        ca_key,
+        config.identity_dir,
+        lifetime_days=config.certificate_lifetime_days,
+    )
+    print(f"node certificate: {bundle.cert_path}")
+    print(f"node key: {bundle.key_path}")
+    print(f"node id: {identity.node_id.hex()}")
+    return 0
+
+
 # ------------------------------------------------------------------ entrypoint
 
 
@@ -298,6 +335,19 @@ def build_parser() -> argparse.ArgumentParser:
     common(p_records)
     p_records.add_argument("--json", default=None)
     p_records.set_defaults(func=_cmd_records)
+
+    p_pki = sub.add_parser("pki", help="инфраструктура сертификатов стенда")
+    pki_sub = p_pki.add_subparsers(dest="pki_cmd", required=True)
+
+    p_init = pki_sub.add_parser("init", help="создать корневой сертификат стенда")
+    p_init.add_argument("--out", type=Path, required=True, help="каталог для ca.pem и ca-key.pem")
+    p_init.set_defaults(func=_cmd_pki_init)
+
+    p_issue = pki_sub.add_parser("issue", help="выпустить сертификат узла")
+    p_issue.add_argument("--config", type=Path, required=True, help="конфигурация узла")
+    p_issue.add_argument("--ca-cert", default=None)
+    p_issue.add_argument("--ca-key", default=None)
+    p_issue.set_defaults(func=_cmd_pki_issue)
 
     return parser
 

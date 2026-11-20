@@ -48,6 +48,15 @@ bucket_refresh_interval_seconds = 600.0
 # plain — только для изолированных тестов транспорта и DHT.
 mode = "tls13"
 tls_min_version = "TLSv1.3"
+# Корневой сертификат стенда: создаётся один раз командой
+#   overlay pki init --out pki
+ca_cert = "pki/ca.pem"
+# Ключ CA нужен только для авто-выпуска сертификата узла. На узлах, которым
+# сертификат уже выдан, путь можно не указывать.
+ca_key = "pki/ca-key.pem"
+# Куда выпускается сертификат узла (по умолчанию state_dir/identity).
+cert_file = ""
+key_file = ""
 verify_peer_identity = true
 # Разрешить доверительный контакт с bootstrap-узлом, чей NodeID ещё неизвестен.
 allow_bootstrap_trust = true

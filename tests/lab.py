@@ -16,6 +16,7 @@ from pathlib import Path
 
 from overlay.config import NodeConfig, PeerAddress
 from overlay.node import Node
+from overlay.security.pki import CertificateBundle, create_ca
 
 
 @dataclass(slots=True)
@@ -47,16 +48,26 @@ class Lab:
     params: LabParams = field(default_factory=LabParams)
     nodes: list[Node] = field(default_factory=list)
     active: set[int] = field(default_factory=set)
+    pki: CertificateBundle | None = None
 
     # ------------------------------------------------------------- creation
 
+    def ensure_pki(self) -> CertificateBundle:
+        """Создать CA стенда один раз (нужен для TLS-режима)."""
+        if self.pki is None:
+            self.pki = create_ca(self.tmp / "pki")
+        return self.pki
+
     def config(self, index: int, *, port: int = 0, **overrides: object) -> NodeConfig:
+        pki = self.ensure_pki() if self.params.security_mode == "tls13" else None
         base = NodeConfig(
             node_id_bits=self.params.node_id_bits,
             state_dir=self.tmp / f"node{index}",
             listen_host="127.0.0.1",
             listen_port=port,
             security_mode=self.params.security_mode,
+            ca_cert=pki.cert_path if pki else None,
+            ca_key=pki.key_path if pki else None,
             k_bucket_size=self.params.k,
             alpha=self.params.alpha,
             replication_factor=self.params.replication_factor,
