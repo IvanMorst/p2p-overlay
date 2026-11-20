@@ -264,6 +264,46 @@ async def _cmd_pki_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_history(args: argparse.Namespace) -> int:
+    response = await _call(args, "history", limit=args.limit)
+    _write_json(args.json, response)
+    stats = response["stats"]
+    print(
+        f"sent={stats['sent']} received={stats['received']} "
+        f"duplicates={stats['duplicates']} rejected={stats['rejected']}"
+    )
+    for item in response["history"]:
+        arrow = "->" if item["direction"] == "out" else "<-"
+        hops = " -> ".join(item["hops"]) if item["hops"] else "-"
+        print(f"  {arrow} {item['peer']:<12} {item['status']:<10} {item['text'][:40]!r} [{hops}]")
+    return 0
+
+
+async def _cmd_send(args: argparse.Namespace) -> int:
+    response = await _call(args, "send", node_id=args.to, text=args.message)
+    message = response["message"]
+    _write_json(args.json, response)
+    print(
+        f"message_id={message['message_id'][:12]} status={message['status']} "
+        f"latency={message['latency_s']:.4f}s attempts={message['attempts']}"
+    )
+    print("hops: " + " -> ".join(message["hops"]))
+    return 0 if message["status"] == "delivered" else 1
+
+
+async def _cmd_tunnels(args: argparse.Namespace) -> int:
+    response = await _call(args, "tunnels")
+    _write_json(args.json, response)
+    print(
+        f"active={response['active']} rebuilds={response['rebuilds']} "
+        f"forwarded={response['forwarded']}"
+    )
+    for tunnel in response["tunnels"]:
+        hops = " -> ".join(tunnel["hops"])
+        print(f"  {tunnel['tunnel_id'][:12]} {tunnel['state']:<9} {hops}")
+    return 0
+
+
 # ------------------------------------------------------------------ entrypoint
 
 
@@ -335,6 +375,24 @@ def build_parser() -> argparse.ArgumentParser:
     common(p_records)
     p_records.add_argument("--json", default=None)
     p_records.set_defaults(func=_cmd_records)
+
+    p_send = sub.add_parser("send", help="отправить сообщение через туннель")
+    common(p_send)
+    p_send.add_argument("--to", required=True, help="NodeID получателя в hex")
+    p_send.add_argument("--message", required=True, help="текст сообщения")
+    p_send.add_argument("--json", default=None)
+    p_send.set_defaults(func=_cmd_send)
+
+    p_tunnels = sub.add_parser("tunnels", help="состояние пула туннелей")
+    common(p_tunnels)
+    p_tunnels.add_argument("--json", default=None)
+    p_tunnels.set_defaults(func=_cmd_tunnels)
+
+    p_history = sub.add_parser("history", help="история сообщений узла")
+    common(p_history)
+    p_history.add_argument("--limit", type=int, default=50)
+    p_history.add_argument("--json", default=None)
+    p_history.set_defaults(func=_cmd_history)
 
     p_pki = sub.add_parser("pki", help="инфраструктура сертификатов стенда")
     pki_sub = p_pki.add_subparsers(dest="pki_cmd", required=True)

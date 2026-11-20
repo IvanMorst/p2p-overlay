@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from .app.messages import MessageRecord, MessageService
 from .config import NodeConfig, PeerAddress
 from .control import ControlServer
 from .dht.contact import Contact
@@ -41,13 +42,14 @@ from .dht.routing import AddResult, KBucket, RoutingTable
 from .dht.rpc import DhtRpc
 from .dht.service import DhtService
 from .dht.storage import RecordStore, load_store
-from .errors import HandshakeError, RecordError
+from .errors import HandshakeError, RecordError, TunnelError
 from .identity import Identity
 from .metrics import EventRecorder
 from .peers import PeerManager
 from .security import SecurityLayer, build_security
 from .transport.frame import Frame
 from .transport.tcp import Connection, serve
+from .tunnel.manager import TUNNEL_MESSAGES, Tunnel, TunnelManager
 
 log = logging.getLogger(__name__)
 
@@ -118,12 +120,15 @@ class Node:
         self.security: SecurityLayer = build_security(self.identity, config)
         self.table = RoutingTable(self.identity.node_id, config.k_bucket_size)
         self.peers = PeerManager(self.identity, config, self.security, metrics=self.metrics)
+        self.peers.set_dispatcher(self._on_frame)
         self.rpc = DhtRpc(self.peers, config, metrics=self.metrics)
         self.lookup = IterativeLookup(self.table, self.rpc, config, metrics=self.metrics)
         self.storage: RecordStore = load_store(config)
         self.service = DhtService(
             self.identity, self.table, config, storage=self.storage, metrics=self.metrics
         )
+        self.tunnels = TunnelManager(self)
+        self.messages = MessageService(self)
         self._rng = random.Random(config.random_seed or None)
         self._published_once = False
         self._server: asyncio.Server | None = None
@@ -187,15 +192,15 @@ class Node:
         )
         if background:
             self.start_background()
-
     def start_background(self) -> None:
-        """Запустить refresh и обслуживание записей DHT."""
+        """Запустить refresh, обслуживание записей DHT и контроль туннелей."""
         if self._background:
             return
         self._background.append(asyncio.create_task(self._refresh_loop(), name="dht-refresh"))
         self._background.append(
             asyncio.create_task(self._maintenance_loop(), name="dht-maintenance")
         )
+        self.tunnels.start()
 
     async def stop(self) -> None:
         """Остановить узел: фоновые задачи, соединения, сервер."""
@@ -209,6 +214,7 @@ class Node:
         if self.control is not None:
             await self.control.stop()
             self.control = None
+        await self.tunnels.stop()
         await self.peers.close_all()
         with contextlib.suppress(Exception):
             self.storage.save()
@@ -256,6 +262,9 @@ class Node:
             self._inbound.discard(conn)
 
     async def _on_frame(self, conn: Connection, peer: Contact | None, frame: Frame) -> None:
+        if frame.type in TUNNEL_MESSAGES:
+            await self.tunnels.handle(conn, peer, frame)
+            return
         await self.service.handle(conn, peer, frame)
 
     async def _learn(self, contact: Contact) -> AddResult:
@@ -481,6 +490,39 @@ class Node:
             port=address.port,
         )
 
+    # ------------------------------------------------------------- туннели
+
+    async def build_tunnel(
+        self, destination_node_id: bytes, constraints: dict[str, Any] | None = None
+    ) -> Tunnel:
+        """Построить туннель до узла по его подписанной адресной записи."""
+        destination = await self.resolve_contact(destination_node_id)
+        exclude: set[bytes] = set()
+        if constraints:
+            raw_exclude = constraints.get("exclude")
+            if isinstance(raw_exclude, (list, tuple, set)):
+                exclude = {item for item in raw_exclude if isinstance(item, bytes)}
+        return await self.tunnels.build(destination, exclude=exclude)
+
+    async def send_via_tunnel(self, tunnel_id: bytes, payload: bytes) -> int:
+        """Отправить байты через активный туннель и дождаться подтверждения."""
+        tunnel = self.tunnels.get(tunnel_id)
+        if tunnel is None:
+            raise TunnelError(f"unknown tunnel {tunnel_id.hex()[:12]}")
+        seq = await self.tunnels.send_raw(tunnel, payload)
+        await self.tunnels.wait_ack(
+            tunnel, seq, self.config.tunnel_data_timeout_seconds
+        )
+        return seq
+
+    async def close_tunnel(self, tunnel_id: bytes) -> None:
+        """Закрыть туннель и освободить состояние ретрансляторов."""
+        await self.tunnels.close(tunnel_id)
+
+    async def send_message(self, destination_node_id: bytes, text: str) -> MessageRecord:
+        """Отправить текстовое сообщение получателю через туннель."""
+        return await self.messages.send_text(destination_node_id, text)
+
     # ------------------------------------------------------------ background
 
     async def _maintenance_loop(self) -> None:
@@ -585,6 +627,8 @@ class Node:
             "rpc": self.rpc.stats(),
             "storage": self.storage.stats(),
             "records": self.storage.snapshot(),
+            "tunnels": self.tunnels.snapshot(),
+            "messages": self.messages.stats(),
             "dht_service": {
                 "requests_in": self.service.requests_in,
                 "requests_out": self.service.requests_out,

@@ -100,6 +100,7 @@ class NodeConfig:
     tunnel_max_relays: int = 3
     tunnel_max_hops: int = 5
     tunnel_pool_size: int = 1
+    tunnel_ttl_seconds: float = 300.0
     tunnel_build_timeout_seconds: float = 10.0
     tunnel_data_timeout_seconds: float = 5.0
     tunnel_health_interval_seconds: float = 2.0
@@ -190,6 +191,7 @@ class NodeConfig:
             tunnel_max_relays=int(tun.get("max_relays", 3)),
             tunnel_max_hops=int(tun.get("max_hops", 5)),
             tunnel_pool_size=int(tun.get("pool_size", 1)),
+            tunnel_ttl_seconds=float(tun.get("ttl_seconds", 300.0)),
             tunnel_build_timeout_seconds=float(tun.get("build_timeout_seconds", 10.0)),
             tunnel_data_timeout_seconds=float(tun.get("data_timeout_seconds", 5.0)),
             tunnel_health_interval_seconds=float(tun.get("health_interval_seconds", 2.0)),
@@ -244,6 +246,8 @@ class NodeConfig:
             raise ConfigError("tunnel max_hops must exceed min_relays")
         if self.tunnel_pool_size < 1:
             raise ConfigError("tunnel pool_size must be >= 1")
+        if self.tunnel_ttl_seconds <= 0:
+            raise ConfigError("tunnel ttl_seconds must be positive")
 
     # ------------------------------------------------------------- accessors
 

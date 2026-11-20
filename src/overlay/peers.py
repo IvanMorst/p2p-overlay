@@ -58,9 +58,31 @@ class PeerManager:
         self._connections: dict[bytes, Connection] = {}
         self._locks: dict[bytes, asyncio.Lock] = {}
         self._bound_port = 0
+        self._dispatcher: Callable[[Connection, Contact, Frame], Awaitable[None]] | None = None
         self._advertise_host = config.advertise_host or (
             "127.0.0.1" if config.listen_host in _UNSPECIFIED_HOSTS else config.listen_host
         )
+
+    def set_dispatcher(
+        self,
+        dispatcher: Callable[[Connection, Contact, Frame], Awaitable[None]],
+    ) -> None:
+        """Назначить обработчик неожиданных (не ответных) кадров соединения.
+
+        Он нужен для входящих кадров туннеля: ``TUNNEL_DATA`` и ``TUNNEL_ACK``
+        приходят на исходящее соединение узла и не являются ответом на запрос.
+        """
+        self._dispatcher = dispatcher
+
+    def _attach_dispatcher(self, conn: Connection, contact: Contact) -> None:
+        if self._dispatcher is None:
+            return
+        dispatcher = self._dispatcher
+
+        async def handler(frame: Frame) -> None:
+            await dispatcher(conn, contact, frame)
+
+        conn.set_handler(handler)
 
     # ------------------------------------------------------------- accessors
 
@@ -258,6 +280,7 @@ class PeerManager:
         contact = self._validate_hello(reply, conn, expected=expected)
         if peer_id is not None and peer_id != contact.node_id:
             raise HandshakeError("HELLO identity differs from the TLS certificate identity")
+        self._attach_dispatcher(conn, contact)
         if self._metrics is not None:
             self._metrics.emit(
                 "peer.dial", peer=contact.short_id, address=contact.address,

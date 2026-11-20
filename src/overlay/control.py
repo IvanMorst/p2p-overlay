@@ -156,6 +156,48 @@ class ControlServer:
             "records": self._node.storage.snapshot(),
         }
 
+    # ------------------------------------------------------- туннели и связь
+
+    async def _cmd_tunnels(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._node.tunnels.snapshot()
+
+    async def _cmd_send(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Отправить текстовое сообщение через туннель."""
+        target = _require_node_id(request, "node_id")
+        text = request.get("text")
+        if not isinstance(text, str) or not text:
+            raise ControlError("text must be a non-empty string")
+        record = await self._node.send_message(target, text)
+        return {"message": record.to_dict()}
+
+    async def _cmd_send_raw(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Отправить байты через существующий туннель (проверка доставки)."""
+        tunnel_id = _require_node_id(request, "tunnel_id")
+        payload = request.get("payload", b"")
+        if not isinstance(payload, bytes):
+            raise ControlError("payload must be bytes")
+        seq = await self._node.send_via_tunnel(tunnel_id, payload)
+        return {"seq": seq}
+
+    async def _cmd_build_tunnel(self, request: dict[str, Any]) -> dict[str, Any]:
+        target = _require_node_id(request, "node_id")
+        tunnel = await self._node.build_tunnel(target)
+        return {"tunnel": tunnel.to_dict(self._node.node_id)}
+
+    async def _cmd_close_tunnel(self, request: dict[str, Any]) -> dict[str, Any]:
+        tunnel_id = _require_node_id(request, "tunnel_id")
+        await self._node.close_tunnel(tunnel_id)
+        return {"closed": True}
+
+    async def _cmd_history(self, request: dict[str, Any]) -> dict[str, Any]:
+        limit = request.get("limit", 50)
+        if not isinstance(limit, int) or limit < 1:
+            limit = 50
+        return {
+            "history": self._node.messages.history(limit),
+            "stats": self._node.messages.stats(),
+        }
+
 
 async def _read_message(reader: asyncio.StreamReader) -> dict[str, Any]:
     header = await reader.readexactly(4)

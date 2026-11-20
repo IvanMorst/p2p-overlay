@@ -67,6 +67,8 @@ replay_cache_size = 4096
 min_relays = 2
 max_relays = 3
 max_hops = 5
+# Время жизни туннеля; после истечения он перестраивается.
+ttl_seconds = 300.0
 pool_size = 1
 build_timeout_seconds = 10.0
 data_timeout_seconds = 5.0

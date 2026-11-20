@@ -37,6 +37,9 @@ class LabParams:
     metrics: bool = False
     tunnel_min_relays: int = 2
     tunnel_max_relays: int = 3
+    tunnel_build_timeout: float = 10.0
+    tunnel_data_timeout: float = 5.0
+    tunnel_health_interval: float = 2.0
     allow_direct_fallback: bool = False
 
 
@@ -80,6 +83,9 @@ class Lab:
             metrics_run_id="test",
             tunnel_min_relays=self.params.tunnel_min_relays,
             tunnel_max_relays=self.params.tunnel_max_relays,
+            tunnel_build_timeout_seconds=self.params.tunnel_build_timeout,
+            tunnel_data_timeout_seconds=self.params.tunnel_data_timeout,
+            tunnel_health_interval_seconds=self.params.tunnel_health_interval,
             allow_direct_fallback=self.params.allow_direct_fallback,
         )
         config = replace(base, **overrides) if overrides else base
